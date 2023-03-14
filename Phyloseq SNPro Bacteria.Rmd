@@ -1,0 +1,506 @@
+---
+title: "SNPro Phyloseq"
+author: "K Harrison"
+date: "7/4/2022"
+output: html_document
+---
+
+Load library
+```{r setup, include=FALSE}
+library(phyloseq)
+library(devtools)
+library(dplyr)
+library(vegan)
+library(ggplot2)
+library(ape)
+library(ggpubr)
+library(readr)
+library(devtools)
+library(ggfortify)
+library(ggforce)
+library(ellipse)
+library(data.table)
+#library(decontam)
+library(microViz)
+install.packages(c("devtools", "RcppEigen", "RcppParallel", "Rtsne", "ggforce", "units"))
+install.packages("remotes")
+remotes::install_github("vmikk/metagMisc")
+library(metagMisc)
+library(FSA) #Dunn post hoc test for ANOVA
+```
+
+
+Load bacteria and yeast data
+```{r}
+setwd("~/Documents/Data/Probiotic SN Study/Packaged product analysis/R data")
+
+#Bacteria
+asv_mat16S<- read_csv("16S ASV SNPro Pro.csv") #ASV counts
+tax_mat16S<- read_csv("16S TAXA SNPro.csv") #Taxa comparison
+samples_df16S <- read_csv("16S SAMP SNPro Pro.csv") #Sample comparison
+###set demo info to factors so that we can merge downstream
+samples_df16S$Type <-as.factor(samples_df16S$Type)
+samples_df16S$Claim <-as.factor(samples_df16S$Claim)
+samples_df16S$Project <-as.factor(samples_df16S$Project)
+samples_df16S$PSPECIES.LISTED <-as.factor(samples_df16S$PSPECIES.LISTED)
+```
+
+Define the row names from the otu column- bacteria
+```{r}
+#------define the row names from the otu column- bacteria
+asv_mat16S <- asv_mat16S %>%
+  tibble::column_to_rownames("ASV") 
+asv_mat16S <- as.matrix(asv_mat16S) #idem matrix
+
+tax_mat16S <- tax_mat16S %>% 
+  tibble::column_to_rownames("ASV")
+tax_mat16S <- as.matrix(tax_mat16S)
+
+samples_df16S <- samples_df16S %>% 
+  tibble::column_to_rownames("ID")
+```
+
+
+Create phyloseq objects
+```{r}
+#Bacteria
+ASV.16S = otu_table(asv_mat16S, taxa_are_rows = TRUE)
+TAX.16S = tax_table(tax_mat16S)
+samples.16S = sample_data(samples_df16S)
+df.bacteria <- phyloseq(ASV.16S, TAX.16S, samples.16S)
+df.bacteria
+```
+
+DECONTAM
+```{r}
+df <- as.data.frame(sample_data(df.bacteria))
+df$LibrarySize <- sample_sums(df.bacteria) #number of reads
+df <- df[order(df$LibrarySize),]
+df$Index <- seq(nrow(df)) #assign number to order
+ggplot(data=df, aes(x=Index, y=LibrarySize, color=Sample_or_Control)) + geom_point()
+head(df$LibrarySize)
+
+df.bacteria.ord <- ordinate(df.bacteria, "PCoA", "bray")
+plot_ordination(df.bacteria, df.bacteria.ord, type="samples", color="Sample_or_Control")
+
+sample_data(df.bacteria)$is.neg <- sample_data(df.bacteria)$Sample_or_Control == "Control Sample"
+contamdf.prev.05 <- isContaminant(df.bacteria, method="prevalence", neg="is.neg", threshold=0.5)
+table(contamdf.prev.05$contaminant)
+
+row_indices <- which(contamdf.prev.05$contaminant)
+```
+
+
+
+
+Filter thru bacteria and create subset for Package Product Exp
+```{r}
+df.bacteria@sam_data$LibrarySize <- sample_sums(df.bacteria) #adding read abundance to phyloseq object
+df.bacteria <- subset_taxa(df.bacteria, Genus != "mitochondria_genus_unknown")
+df.bacteria <- subset_taxa(df.bacteria, Genus != "Ralstonia")
+df.bacteria <- subset_samples(df.bacteria, NMR.Data != "No")
+# Determine which genera are present
+tax_table(df.bacteria)[, "Genus"]
+#generate random tree and merge into phyloseq object for ordinate calculations
+random_tree = rtree(ntaxa(df.bacteria), rooted=TRUE, tip.label=taxa_names(df.bacteria))
+#plot(random_tree)
+df.bacteria = merge_phyloseq(df.bacteria, random_tree)
+df.bacteria.prod <- subset_samples(df.bacteria, Project == "Package Product")
+df.bacteria.prod@sam_data$LibrarySize <- sample_sums(df.bacteria.prod)
+#tax_table(df.bacteria.prod)[, "Genus"]
+#create a dataset for the packaged product analysis
+bacteria.prod.matrix <- phyloseq_to_df(df.bacteria.prod, addtax = T, addtot = T, addmaxrank = F,
+  sorting = "abundance")
+bacteria.prod.matrix<- t(bacteria.prod.matrix)#transpose matrix
+
+df.bacteria.fil = filter_taxa(df.bacteria, function(x) sum(x > 5) > (0.25*length(x)), TRUE) ##Remove taxa not seen more than 5 times in at least 20% of the samples. This protects against an OTU with small mean & trivially large C.V.
+#df.bacteria <- tax_glom(df.bacteria.fil, taxrank = "Genus") #merge genus-level
+#tax_table(df.bacteria.fil)[, "Genus"]
+RA.bacteria<- transform_sample_counts(df.bacteria.fil, function(x) x / sum(x) )
+tax_table(RA.bacteria)[, "Genus"]
+tax_table(df.bacteria.fil)[, "Genus"]
+
+bacteria.RA.matrix <- phyloseq_to_df(RA.bacteria, addtax = T, addtot = T, addmaxrank = F,
+  sorting = "abundance")
+
+write.csv(bacteria.RA.matrix, "RA.16S.matrix.csv")
+#Create taxa plots via claim and type
+#```{r}
+#p1 <- plot_bar(RA.bacteria, fill = "Genus", title = "Genus") + facet_wrap(~Type, scales= "free_x", nrow=1) + geom_point() + theme(axis.text.x=element_blank(), axis.ticks.x=element_blank())
+#p1 = p1 + geom_bar(aes(color=Genus, fill=Genus), stat="identity", position="stack")
+#p2 <- plot_bar(RA.bacteria, fill = "Family", title = "") + facet_wrap(~Type, scales= "free_x", nrow=1) + theme(axis.text.x=element_blank(), axis.ticks.x=element_blank())
+#p2 = p2 + geom_bar(aes(color=Family, fill=Family), stat="identity", position="stack") #+ theme(legend.position = "none") 
+#p3 <- plot_bar(RA.bacteria, fill = "Genus", title = "") + facet_wrap(~Claim, scales= "free_x", nrow=1) + theme(axis.text.x=element_blank(), axis.ticks.x=element_blank())
+#p3 = p3 + geom_bar(aes(color=Genus, fill=Genus), stat="identity", position="stack") #+ theme(legend.position = "none") 
+#p4 <- plot_bar(RA.bacteria, fill = "Family", title = "") + facet_wrap(~Claim, scales= "free_x", nrow=1) + theme(axis.ticks.x = element_blank(),axis.text.x = element_blank())
+#p4 = p4 + geom_bar(aes(color=Family, fill=Family), stat="identity", position="stack") #+ theme(legend.position = "none") 
+
+#ggarrange(p2,p4, nrow = 1,ncol=2,common.legend = TRUE, legend="right")
+```
+
+
+Make Taxa plots for samples with LOW and HIGH total CFU
+```{r}
+#create a dataset with low CFU count
+df.low <- subset_samples(df.bacteria, CFU.COUNT=="<1000")
+df.low.fil = filter_taxa(df.low, function(x) sum(x > 5) > (0.20*length(x)), TRUE)
+RA.low<- transform_sample_counts(df.low.fil, function(x) x / sum(x) )
+
+p.low <- plot_bar(RA.low, fill = "Genus", title = "Genus") + geom_point() + theme(axis.text.x=element_blank(), axis.ticks.x=element_blank())
+
+p.low + geom_bar(aes(color=Genus, fill=Genus), stat="identity", position="stack") + facet_wrap(~Claim, scales= "free_x", nrow=1)
+tax_table(df.low.fil)[, "Genus"]
+
+df.hi <- subset_samples(df.bacteria,CFU.COUNT==">1000")
+df.hi.fil = filter_taxa(df.hi, function(x) sum(x > 5) > (0.20*length(x)), TRUE)
+RA.hi<- transform_sample_counts(df.hi.fil, function(x) x / sum(x) )
+tax_table(df.hi.fil)[, "Genus"]
+p.hi <- plot_bar(RA.hi, fill = "Genus", title = "Genus") + geom_point() + theme(axis.text.x=element_blank(), axis.ticks.x=element_blank())
+#Manually removed ASV: 5, 10, 83, 50, 57, 24, 96, 86, 53, 9
+
+```
+
+
+Make Taxa plots for samples with lactobacillus and bacillus listed
+```{r}
+#create a dataset with lactobacillus listed as ingredient
+df.lact<- subset_samples(df.bacteria, LACTO.LISTED=="Y")
+df.lact.fil = filter_taxa(df.lact, function(x) sum(x > 5) > (0.75*length(x)), TRUE)
+RA.lact<- transform_sample_counts(df.low.fil, function(x) x / sum(x) )
+p.lact <- plot_bar(RA.lact, fill = "Genus", title = "Genus") + geom_point() + theme(axis.text.x=element_blank(), axis.ticks.x=element_blank())
+p.lact + geom_bar(aes(color=Genus, fill=Genus), stat="identity", position="stack") 
+#tax_table(df.low.fil)[, "Genus"]
+#create a dataset with bacillus listed as ingredient
+df.bacillus<- subset_samples(df.bacteria, BACILLUS.LISTED=="Y")
+df.bacillus.fil = filter_taxa(df.bacillus, function(x) sum(x > 5) > (0.75*length(x)), TRUE)
+RA.bacillus<- transform_sample_counts(df.bacillus.fil, function(x) x / sum(x) )
+p.bacillus <- plot_bar(RA.bacillus, fill = "Genus", title = "Genus") + geom_point() + theme(axis.text.x=element_blank(), axis.ticks.x=element_blank())
+p.bacillus + geom_bar(aes(color=Genus, fill=Genus), stat="identity", position="stack") 
+
+#Manually removed ASV: 5, 10, 83, 50, 57, 24, 96, 86, 53, 9
+
+```
+
+
+```
+Alpha diversity comparison- btw types and claims 
+reference: https://micca.readthedocs.io/en/latest/phyloseq.html
+```{r}
+#Measure Alpha diversity measure- Shannon
+df.bacteria.shannon <- estimate_richness(df.bacteria.fil, measures="Shannon")
+#Measure Alpha diversity measure- Chao1
+df.bacteria.chao1 <- estimate_richness(df.bacteria.fil, measures="Chao1")
+
+#Plot alpha diversity by Type, Claim, PStrain.Listed
+p.alpha.claim <- plot_richness(df.bacteria.fil, "Claim", measures=c("Chao1", "Shannon"), color = "Claim") 
+
+p.alpha.type <- plot_richness(df.bacteria.fil, "Type", measures=c("Chao1", "Shannon"), color = "Type") 
+p.alpha.type + geom_boxplot(alpha=0.3)
+p.alpha.probiotic <- plot_richness(df.bacteria.fil, "PSPECIES.LISTED", measures=c("Chao1", "Shannon"), color = "PSPECIES.LISTED") 
+p.alpha.probiotic + geom_boxplot(alpha=0.3)
+
+aov()
+
+#Pairwise Wilcoxon rank-sum test for Beta Diversity
+pairwise.wilcox.test(df.bacteria.chao1$Chao1,sample_data(df.bacteria.fil)$Type)
+#              Hard Soft
+#Soft          0.27 -   
+#Soft-Aberrant 0.44 0.33
+pairwise.wilcox.test(df.bacteria.chao1$Chao1,sample_data(df.bacteria.fil)$Claim)
+#         live  none 
+#none      0.053 -    
+#probiotic 0.052 0.224
+#chi-square for PSpecies.Listed.....
+
+pairwise.wilcox.test(df.bacteria.shannon$Shannon,sample_data(df.bacteria.fil)$Type)
+#              Hard Soft
+#Soft          0.18 -   
+#Soft-Aberrant 0.67 0.10
+pairwise.wilcox.test(df.bacteria.shannon$Shannon,sample_data(df.bacteria.fil)$Claim)
+#          live none
+#none      0.85 -   
+#probiotic 0.20 0.85
+```
+p.alpha.type + geom_boxplot(data=p.alpha.probiotic$data, aes(x=Type, y=value, fill=Type), alpha=0.3) + theme_bw()
+
+Ordination plots
+```{r}
+bacteria.ordan <- ordinate(df.bacteria.fil, "NMDS", "bray")
+p1 = plot_ordination(df.bacteria.fil, bacteria.ordan, type="taxa", color="Family", title="taxa")
+print(p1)
+```
+
+
+Ordinate plots- PIE CHART
+```{r}
+df.bacteria.fil <- tax_fix(df.bacteria.fil)
+df.bacteria.fil <- phyloseq_validate(df.bacteria.fil, remove_undetected = TRUE)
+df.bacteria.fil %>% 
+  tax_transform(trans = "clr", rank = "Genus")
+
+
+df.bacteria.fil %>% 
+  tax_transform("clr", rank = "Genus") %>% 
+  # when no distance matrix or constraints are supplied, PCA is the default/auto ordination method
+  ord_calc() %>% 
+  ord_plot_iris(tax_level = "Genus", anno_colour = "Claim"
+)
+
+#scree
+#distanceMethodList
+DistUF = distance(df.bacteria.fil, method = "bray")
+ordUF = ordinate(df.bacteria.fil, method = "PCoA", distance = DistUF)
+plot_scree(ordUF, "Scree Plot: Weighted UniFrac MDS") + theme_bw()
+
+adonis2(DistUF ~ sample_data(df.bacteria.fil)$Type) 
+#p-value = 0.012*
+adonis2(DistUF ~ sample_data(df.bacteria.fil)$Claim) 
+#p-value = 0.041 *
+adonis2(DistUF ~ sample_data(df.bacteria.fil)$PSPECIES.LISTED)
+#0.002 **
+#
+
+plot_ordination(df.bacteria.fil, ordinate(df.bacteria.fil, method='PCoA', dist = 'bray'), type='split', 
+                color='Type')
+ord <- ordinate(df.bacteria.fil, method='PCoA')
+p.ord <- plot_ordination(df.bacteria.fil, ord, type='sample', 
+                color="Type")
+#t-distribution and normal distribution         
+p.ord + 
+  stat_ellipse(type = "norm", linetype = 2) +
+  stat_ellipse(type = "t") + 
+  theme_bw()
+```
+
+p + 
+  stat_ellipse(type = "norm", linetype = 2) +
+  stat_ellipse(type = "t") + 
+  theme_bw()
+
+
+
+df.bacteria.fil %>% 
+  tax_transform("clr", rank = "Genus") %>% 
+  # when no distance matrix or constraints are supplied, PCA is the default/auto ordination method
+  ord_calc() %>% 
+  ord_plot_iris(tax_level = "Genus",  anno_colour = "Type"
+)
+
+
+```{r}
+df.type <- subset_samples(df.bacteria.fil, PSPECIES.LISTED=="NO")
+df.type <- subset_taxa(df.type, Genus != "mitochondria_genus_unknown")
+df.type <- tax_fix(df.type)
+df.type <- phyloseq_validate(df.type, remove_undetected = TRUE)
+
+df.type %>% 
+  tax_transform(trans = "clr", rank = "Genus")
+
+df.type %>% 
+  tax_transform("clr", rank = "Genus") %>% 
+  # when no distance matrix or constraints are supplied, PCA is the default/auto ordination method
+  ord_calc() %>% 
+  ord_plot_iris(tax_level = "Genus", ord_plot = "above", anno_colour = "Type"
+)
+
+df.prob<- subset_samples(df.bacteria.fil, PSPECIES.LISTED=="YES")
+df.prob <- subset_taxa(df.prob, Genus != "mitochondria_genus_unknown")
+df.prob <- tax_fix(df.prob)
+df.prob <- phyloseq_validate(df.prob, remove_undetected = TRUE)
+
+df.prob %>% 
+  tax_transform(trans = "clr", rank = "Genus")
+
+df.prob %>% 
+  tax_transform("clr", rank = "Genus") %>% 
+  # when no distance matrix or constraints are supplied, PCA is the default/auto ordination method
+  ord_calc() %>% 
+  ord_plot_iris(tax_level = "Genus", ord_plot = "above", anno_colour = "Type"
+)
+```
+df.type %>% 
+  tax_transform("clr", rank = "Genus") %>% 
+  # when no distance matrix or constraints are supplied, PCA is the default/auto ordination method
+  ord_calc() %>% 
+  ord_plot_iris(tax_level = "Genus"
+)
+
+df.prob %>% 
+  tax_transform("clr", rank = "Genus") %>% 
+  # when no distance matrix or constraints are supplied, PCA is the default/auto ordination method
+  ord_calc() %>% 
+  ord_plot_iris(tax_level = "Genus",anno_colour = "ADDED.SPECIES",  ord_plot = "above"
+)
+  
+Make a dataframe for just samples with Lacto and Bacillus clalims 
+
+```{r}
+df.lacto <- subset_samples(df.bacteria, LACTO.LISTED == "Y")
+df.lacto.fil = filter_taxa(df.lacto, function(x) sum(x > 5) > (0.25*length(x)), TRUE) ##Remove taxa not seen more than 5 times in at least 20% of the samples. This protects against an OTU with small mean & trivially large C.V.
+RA.lacto<- transform_sample_counts(df.lacto.fil, function(x) x / sum(x) )
+
+pL <- plot_bar(RA.lacto, fill = "Genus", title = "Lactobacillus Listed") 
+  # + theme(axis.text.x=element_blank(), axis.ticks.x=element_blank())
+pL = pL + geom_bar(aes(color=Genus, fill=Genus), stat="identity", position="stack") #+ theme(legend.position = "none") 
+
+
+df.bacillus <- subset_samples(df.bacteria, BACILLUS.LISTED == "Y")
+df.bacillus.fil = filter_taxa(df.bacillus, function(x) sum(x > 5) > (0.25*length(x)), TRUE) ##Remove taxa not seen more than 5 times in at least 20% of the samples. This protects against an OTU with small mean & trivially large C.V.
+RA.bacillus<- transform_sample_counts(df.bacillus.fil, function(x) x / sum(x) )
+
+pB <- plot_bar(RA.bacillus, fill = "Genus", title = "Bacillus Listed") 
+  # + theme(axis.text.x=element_blank(), axis.ticks.x=element_blank())
+pB = pB + geom_bar(aes(color=Genus, fill=Genus), stat="identity", position="stack") #+ theme(legend.position = "none") 
+
+ggarrange(pL,pB, nrow = 1,ncol=2,common.legend = TRUE)
+```
+
+
+```{r}
+df.bacteria <- phyloseq_to_df(df.bacteria.fil, addtax = T, addtot = F, addmaxrank = F,
+  sorting = "abundance")
+write.csv(df.bacteria,"~/Documents/Data/Probiotic SN Study/Packaged product analysis/R data/dfbacteria.csv", row.names = TRUE)
+```
+
+Distribution of lacto and bacillus reads by Type
+```{r}
+df <- as.data.frame(df.bacteria.fil@otu_table)
+#transform data frame
+df.reads.bacteria <- t(df) 
+#ASV002 bacillus ASV003 Lactobacillus
+#Add Type variable as a column to df.reads.bacteria
+#df.reads.LAB <- df.reads.bacteria[,c(4,7)]
+
+df.reads.LAB<- read_csv("Lac.Bac.Reads.csv") #ASV counts
+
+#make histogram of bacilllus and lactobacillus distribution
+bacillus.hist <- ggplot(df.reads.LAB, aes(x=`Bacillus Log(Reads)`, color=Type, fill=Type)) +
+   geom_histogram(position="identity", alpha=0.7)  + geom_density(alpha=0.25)
+   
+bacillus.hist.l <- ggplot(df.reads.LAB, aes(x=`Bacillus Log(Reads)`, color=BACILLUS.LISTED, fill=BACILLUS.LISTED)) +
+   geom_histogram(position="identity", alpha=0.9)  + geom_density(alpha=0.5) + theme_bw()
+   
+lactobacillus.hist <- ggplot(df.reads.LAB, aes(x=`Lactobacillus Log(Reads)`, color=Type, fill=Type)) +
+   geom_histogram(position="identity", alpha=0.7)  + geom_density(alpha=0.25)
+
+lactobacillus.hist.l <- ggplot(df.reads.LAB, aes(x=`Lactobacillus Log(Reads)`, color=LACTO.LISTED, fill=LACTO.LISTED)) +
+   geom_histogram(position="identity", alpha=0.9)  + geom_density(alpha=0.5) + theme_bw() +
+  scale_color_manual(values = c("gold1", "darkgrey")) +
+  scale_fill_manual(values = c("gold1", "darkgrey"))
+
+
+
+#ANOVA tests for distribution
+kruskal.test(`ASV002`~ Type, data = df.reads.LAB) 
+#chi-squared = 16.422, df = 2, p-value = 0.0002717
+kruskal.test(`ASV003`~ Type, data = df.reads.LAB) 
+
+#ANOVA tests for distribution
+kruskal.test(`ASV002`~ BACILLUS.LISTED, data = df.reads.LAB) 
+#chi-squared = 16.422, df = 2, p-value = 0.0002717
+kruskal.test(`ASV003`~ LACTO.LISTED, data = df.reads.LAB) 
+```
+library(patchwork)
+lactobacillus.hist + scale_color_brewer(palette="Dark2") + scale_fill_brewer(palette="Dark2")
+bacillus.hist.l|lactobacillus.hist.l
+
+```{r}
+RA.ANOVA<- read_csv("RA.16S.NMR.csv") #ASV counts
+
+kruskal.test(`Gluconobacter`~ Type, data = RA_16S_NMR) 
+#p-value =0.01775
+dunnTest(`Gluconobacter`~ Type, data = RA_16S_NMR, method="bh") 
+#Hard-Soft p = 0.02125937
+
+kruskal.test(`Bacillus`~ Type, data = RA_16S_NMR) 
+#p-value = 0.02697
+dunnTest(`Bacillus`~ Type, data = RA.ANOVA, method="bh") 
+#Hard-Soft p = 0.04962812
+
+kruskal.test(`Lactobacillus`~ Type, data = RA.ANOVA) 
+#p-value = 0.04015
+dunnTest(`Lactobacillus`~ Type, data = RA.ANOVA, method="bh") 
+#Hard-Soft p = 0.03383108
+
+kruskal.test(`Komagateibacter`~ Type, data = RA.ANOVA) 
+#p-value = 0.2797
+
+kruskal.test(`Streptococcus`~ Type, data = RA.ANOVA) 
+#p-value = 0.003987
+dunnTest(`Streptococcus`~ Type, data = RA.ANOVA, method="bh") 
+#Hard-Soft-Aberrant p = 0.006214781; Hard-Soft p-value = 0.009481806
+
+kruskal.test(`Acetobacter`~ Type, data = RA.ANOVA) 
+#p-value = 0.5697
+
+kruskal.test(`Acinetobacter`~ Type, data = RA.ANOVA) 
+#p-value = 0.01785
+dunnTest(`Acinetobacter`~ Type, data = RA.ANOVA, method="bh") 
+#Hard-Soft p = 0.01478114
+
+kruskal.test(`Acetobacteraceae_genus_unknown`~ Type, data = RA.ANOVA) 
+#p-value = 0.05766
+
+kruskal.test(`Enterobacteriaceae_genus_unknown`~ Type, data = RA.ANOVA) 
+#p-value = 0.5067
+
+kruskal.test(`Chryseobacterium`~ Type, data = RA.ANOVA) 
+#p-value = 0.03035
+dunnTest(`Chryseobacterium`~ Type, data = RA.ANOVA, method="bh") 
+#Hard-Soft p = 0.02460663
+
+kruskal.test(`Sphingomonas`~ Type, data = RA.ANOVA) 
+#p-value = 0.04861
+dunnTest(`Sphingomonas`~ Type, data = RA.ANOVA, method="bh") 
+#Hard-Soft p = 0.05349564
+
+kruskal.test(`Sphingobium"`~ Type, data = RA.ANOVA) 
+#p-value = 0.04861
+dunnTest(`Sphingobium`~ Type, data = RA.ANOVA, method="bh") 
+#Hard-Soft p = 0.05349564
+
+kruskal.test(`Sphingobium"`~ Type, data = RA.ANOVA) 
+#p-value = 0.00854
+dunnTest(`Sphingobium"`~ Type, data = RA.ANOVA, method="bh") 
+#Hard-Soft p = 0.00548857; S-SA p-vale = 0.029977080
+
+kruskal.test(`Pedobacter`~ Type, data = RA.ANOVA) 
+#p-value = 0.05898
+```
+
+Looking at replicate samples 
+```{r}
+#Bacteria
+asv_mat16S.R<- read_csv("16S ASV SNPro.csv") #ASV counts
+tax_mat16S.R<- read_csv("16S TAXA SNPro.csv") #Taxa comparison
+samples_df16S.R <- read_csv("16S SAMP SNPro.csv") #Sample comparison
+###set demo info to factors so that we can merge downstream
+samples_df16S.R$Replicated <-as.factor(samples_df16S.R$Replicated)
+samples_df16S.R$Replicate <-as.factor(samples_df16S.R$Replicate)
+#------define the row names from the otu column- bacteria
+asv_mat16S.R <- asv_mat16S.R %>%
+  tibble::column_to_rownames("ASV") 
+asv_mat16S.R <- as.matrix(asv_mat16S.R) 
+#id matrix
+tax_mat16S.R <- tax_mat16S.R %>% 
+  tibble::column_to_rownames("ASV")
+tax_mat16S.R <- as.matrix(tax_mat16S.R)
+samples_df16S.R <- samples_df16S.R %>% 
+  tibble::column_to_rownames("ID")
+#------create phyloseq object
+ASV.16S = otu_table(asv_mat16S.R, taxa_are_rows = TRUE)
+TAX.16S = tax_table(tax_mat16S.R)
+samples.16S = sample_data(samples_df16S.R)
+df.bacteria <- phyloseq(ASV.16S, TAX.16S, samples.16S)
+df.bacteria
+#-------create phyoseq object just replicates 
+df.replicates <- subset_samples(df.bacteria, Replicated == "Yes")
+#Filter through samples 
+df.replicates <- subset_taxa(df.replicates, Genus != "mitochondria_genus_unknown")
+df.replicates <- subset_taxa(df.replicates, Genus != "Ralstonia")
+df.replicates.fil = filter_taxa(df.replicates, function(x) sum(x > 5) > (0.25*length(x)), TRUE)
+
+#create taxa plots for replicate samples-favcet by rep
+
+```
+

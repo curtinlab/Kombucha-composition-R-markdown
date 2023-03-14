@@ -1,0 +1,784 @@
+---
+title: "Packaged Product-SN-June 2022"
+author: "K Harrison"
+date: "7/1/2022"
+output: html_document
+---
+
+Evaluate NMR and CFU data from packaged probiotic study 
+-----
+
+Load libraries
+```{r}
+library(dplyr)
+library(plyr)
+library(vegan)
+library(ape)
+library(devtools)
+library(ggplot2)
+library(ggfortify)
+library(ggrepel) #repel loading labels
+library(vtable) #creates tables of summary stats
+library(gridExtra)
+library(FSA) #Dunn post hoc test for ANOVA
+library(PCAtools) #for making PCA plots 
+library(ggforce)
+library(ellipse)
+library(readr)
+library(tidyverse)
+library(tidyr)
+library(ggpubr) #ggarrange
+library(leaps)
+library(corrplot)
+library(car)
+library(GGally)
+library(viridis)
+library(gridExtra) #MANOVA
+library(MASS) #LDA post-hoc MANOVA
+library(patchwork)
+```
+
+Load data
+```{r}
+#set working directory
+setwd("~/Documents/Data/Probiotic SN Study/Packaged product analysis/R data")
+
+#import data 
+df.snpro <- read_csv("SNProN2.csv") #original dataset containing demograohic, cfu, logcfu, and NMR data- no samples removed
+#df.snpro.legal <- read_csv("SNProR.legal.csv") #original dataset containing demograohic, cfu, logcfu, and NMR data- soft samples <0.5% have been removed
+#View(df)
+#summary(df)
+#df.readcounts <-  read_csv("Lac.Bac.Reads.csv")
+#df.readcounts <- df.readcounts[,-1]
+#make first column row names
+#------------------------------------adjust SNPro dataset (CFU-Claim)
+df.adj <- df.snpro[-c(4,28,26,24,22)] #remove non-log counts & categorical columnswith NA
+#df.adj[is.na(df.adj)] <- 0 #convert NA to 0
+df.adj$SNPRO <- as.character(df.adj$SNPRO) #convert IDs to characters
+
+df.adj$'Total acid(g L-1)' <- df.adj$`Acetic acid(g L-1)` + df.adj$`Lactic acid(g L-1)` + df.adj$`Gluconic acid(g L-1)` #calculate total acidity
+df.adj$'Total sugar(g L-1)' <- df.adj$`Glucose(g L-1)` + df.adj$`Fructose(g L-1)` + df.adj$`Sucrose(g L-1)` #calculate TOTAL SUGAR
+df.nmr <- subset(df.adj, NMR.Data == "Yes")
+df.nmr.NOethanol <- df.nmr[c(2,4,10,11,14:20,27,28)] #DF with all metabolites but etoh
+df.nmr.etoh<- df.nmr[c(2,4,10,11,12,14:20,27,28)] #DF with all metabolites
+#ethanol removed
+df.cfu <- df.adj[c(2,4,7,9,21:24,26)] #just log cfu values, claim, strainlisted, and type
+df.cfu.type <- df.nmr[c(2,4,7,9,21:24,26)] #just log cfu values, claim, strainlisted, and type
+
+#------------------------------------adjust SNPro Legal dataset (NMR)
+#df.adj.l <- df.snpro.legal[-c(1,3,4,5,6,7,11,26:30)] #remove non-log counts & categorical columnswith NA
+#df.adj.l[is.na(df.adj.l)] <- 0 #convert NA to 0
+#df.adj.l$SNPRO <- as.character(df.adj.l$SNPRO) #convert IDs to characters
+#-------------------------------- CFU dataset
+
+CFU.all <- read_csv("CFU.All.csv") #reformated logCFU data to make boxplots with multiple levels
+CFU.all[is.na(CFU.all)] <- 0
+
+SPC.all <- read_csv("SPC.counts.csv") #reformated logCFU counts to make boxplots with levels across all media types and median cfu ml-1
+
+
+#---------------------------------- Probiotic subset
+df.cfu.prob <- subset(df.cfu, Claim == "probiotic")
+#----------------------------Summary stats- demographics 
+df.demo <- df.nmr[c(1,2,4:6)]
+#df.demo.l <- df.adj.l[c(1:4)]
+df.demo.cfu <- df.adj[c(4,21:25)]
+st(df.demo)
+df.nmr.demo <- df.nmr[-c(2)]
+st(df.nmr, group = 'Type', group.test = FALSE, digits = 2, fixed.digits = TRUE)
+st(df.demo.cfu, group = 'Claim', group.test = FALSE, digits = 2, fixed.digits = TRUE)
+```
+
+Descriptive statistics 
+```{r}
+#make hisograms to determine normality 
+#hist.data.frame(df.adj) #nothing has a normal distribution
+
+#make 2x2 panel of boxplots for CFU/ml by Claim
+#attach(df.adj)
+#par(mfrow=c(2,2))
+#boxplot(logM13 ~ Claim)
+#boxplot(logMRS ~ Claim)
+#boxplot(logWLN ~ Claim)
+#boxplot(logNA ~ Claim)
+```
+
+Create violin plots for overall count by claim- including median CFU
+```{r}
+#Re-order groups: change the order of SPC.all$Media
+SPC.all$Media <- factor(SPC.all$Media, levels = c("NAm", "M13", "MRS", "WLN", "Median"), order = TRUE)
+
+SPC.all.boxplot <- ggplot(SPC.all, aes(x= Media, y=`log(CFU ml-1)`, fill=Media)) +
+  geom_violin()+
+  geom_boxplot(width=0.1) + scale_fill_brewer(palette="BuPu")
+```
+
+SPC.all.boxplot
+
+WLN
+Create violin plots of SPC by claim
+```{r}
+#remove samples with "none" as claim
+#make violin plots for CFU/ml distribution across different media types
+
+M13 <-  ggplot(df.adj, aes(x= Claim, y=`logM13`, fill=Claim)) +
+  geom_violin()+
+  geom_boxplot(width=0.1) + scale_fill_brewer(palette="RdPu")
+
+MRS <- ggplot(df.adj, aes(x= Claim, y=`logMRS`, fill=Claim)) +
+  geom_violin()+
+  geom_boxplot(width=0.1) + scale_fill_brewer(palette="RdPu")
+
+WLN <- ggplot(df.adj, aes(x= Claim, y=`logWLN`, fill=Claim)) +
+  geom_violin()+
+  geom_boxplot(width=0.1) + scale_fill_brewer(palette="RdPu")
+NAm <- ggplot(df.adj, aes(x= Claim, y=`logNA`, fill=Claim)) +
+  geom_violin()+
+  geom_boxplot(width=0.1) + scale_fill_brewer(palette="RdPu")
+#arrange plots into one plot with multiple panels
+ggarrange(M13, MRS, NAm, WLN, nrow = 4, common.legend = TRUE, legend="bottom") 
+
+
+# Install and load the ggstatsplot package to include mean
+install.packages("ggplot2", dependencies = TRUE)
+install.packages("ggstatsplot")
+library(ggstatsplot)
+
+# Modify the code for each plot to include statistics
+M13 <- ggplot(df.adj, aes(x= Claim, y=`logM13`, fill=Claim)) +
+  geom_violin()+
+  geom_boxplot(width=0.1) + 
+  geom_jitter(alpha=0.8, size=1, width=0.1) + 
+  scale_fill_brewer(palette="RdPu")
+
+MRS <- ggplot(df.adj, aes(x= Claim, y=`logMRS`, fill=Claim)) +
+  geom_violin()+
+  geom_boxplot(width=0.1) + 
+  geom_jitter(alpha=0.8, size=1, width=0.1) + 
+  scale_fill_brewer(palette="RdPu")
+
+WLN <- ggplot(df.adj, aes(x= Claim, y=`logWLN`, fill=Claim)) +
+  geom_violin()+
+  geom_boxplot(width=0.1) + 
+  geom_jitter(alpha=0.8, size=1, width=0.1) + 
+  scale_fill_brewer(palette="RdPu")
+
+NAm <- ggplot(df.adj, aes(x= Claim, y=`logNA`, fill=Claim)) +
+  geom_violin()+
+  geom_boxplot(width=0.1) + 
+  geom_jitter(alpha=0.8, size=1, width=0.1) + 
+  scale_fill_brewer(palette="RdPu")
+
+# Arrange the plots into one plot with multiple panels
+ggarrange(M13, MRS, NAm, WLN, nrow = 4, common.legend = TRUE, legend="bottom")
+
+#create dataframe with only "probiotic" and "probitoic and live" by probiotic ingredient 
+
+M13.s <- ggplot(df.adj, aes(x= Organism.Listed, y=`logM13`, fill=Organism.Listed)) +
+  geom_violin()+
+  geom_jitter(alpha=0.8, size=1, width=0.1) + 
+  geom_boxplot(width=0.1) + scale_fill_brewer(palette="RdPu") + scale_x_discrete(guide = guide_axis(check.overlap = TRUE))
+MRS.s <- ggplot(df.adj, aes(x= Organism.Listed, y=`logMRS`, fill=Organism.Listed)) +
+  geom_violin()+
+  geom_jitter(alpha=0.8, size=1, width=0.1) + 
+  geom_boxplot(width=0.1) + scale_fill_brewer(palette="RdPu") + scale_x_discrete(guide = guide_axis(check.overlap = TRUE)) 
+WLN.s <- ggplot(df.adj, aes(x= Organism.Listed, y=`logWLN`, fill=Organism.Listed)) +
+  geom_violin()+
+  geom_jitter(alpha=0.8, size=1, width=0.1) + 
+  geom_boxplot(width=0.1) + scale_fill_brewer(palette="RdPu") + scale_x_discrete(guide = guide_axis(check.overlap = TRUE))
+NAm.s <- ggplot(df.adj, aes(x= Organism.Listed, y=`logNA`, fill=Organism.Listed)) +
+  geom_violin()+
+  geom_jitter(alpha=0.8, size=1, width=0.1) + 
+  geom_boxplot(width=0.1) + scale_fill_brewer(palette="RdPu") + scale_x_discrete(guide = guide_axis(check.overlap = TRUE))
+Max.s <- ggplot(df.adj, aes(x= Organism.Listed, y=Max.cfu, fill=Organism.Listed)) +
+  geom_violin()+
+  geom_boxplot(width=0.1) + scale_fill_brewer(palette="RdPu") + scale_x_discrete(guide = guide_axis(check.overlap = TRUE)) + theme_bw()
+#arrange plots into one plot with multiple panels
+Organism.CFU.box <- ggarrange(MRS.s,Max.s,nrow = 2, ncol=2, common.legend = TRUE, legend="bottom") 
+
+```
+
+ggarrange(M13, MRS, NAm, WLN, nrow = 4,common.legend = TRUE, legend="bottom") 
+ggarrange(M13.s, MRS.s, NAm.s, WLN.s, nrow = 4, common.legend = TRUE, legend="bottom") 
+ggarrange(M13.t, MRS.t, NAm.t, WLN.t, nrow = 4, common.legend = TRUE, legend="bottom") 
+organism <- ggarrange(MRS.s, Max.s, nrow = 1, ncol=2, common.legend = TRUE, legend="bottom") 
+
+
+```{r}
+#make violin plots for CFU/ml distribution across different media types
+
+M13.t <- ggplot(df.nmr, aes(x= Type, y=`logM13`, fill=Type)) +
+  geom_violin()+
+  geom_jitter(alpha=0.8, size=1, width=0.1) + 
+  geom_boxplot(width=0.1) + scale_fill_brewer(palette="RdPu") + theme_bw() + theme(legend.position="bottom")
+MRS.t <- ggplot(df.nmr, aes(x= Type, y=`logMRS`, fill=Type)) +
+  geom_violin()+
+  geom_jitter(alpha=0.8, size=1, width=0.1) + 
+  geom_boxplot(width=0.1) + scale_fill_brewer(palette="RdPu") + theme_bw()
+WLN.t <- ggplot(df.adj, aes(x= Type, y=`logWLN`, fill=Type)) +
+  geom_violin()+
+  geom_jitter(alpha=0.8, size=1, width=0.1) + 
+  geom_boxplot(width=0.1) + scale_fill_brewer(palette="RdPu") 
+NAm.t <- ggplot(df.nmr, aes(x= Type, y=`logNA`, fill=Type)) +
+  geom_violin()+
+  geom_jitter(alpha=0.8, size=1, width=0.1) + 
+  geom_boxplot(width=0.1) + scale_fill_brewer(palette="RdPu") + theme(legend.position = "none")
+#arrange plots into one plot with multiple panels
+ggarrange(M13.t, MRS.t, NAm.t, WLN.t, nrow = 4, common.legend = TRUE, legend="bottom") 
+
+
+
+```
+(hist.cfu.claim + hist.cfu.type)/(M13.t + p)
+
+```{r}
+data <- df.nmr[c(1,3,4,5,7,8,9,12,13)]
+
+# Plot
+ggparcoord(data,
+    columns = 2:9, groupColumn = 1,showPoints = TRUE, scale="center")
++ 
+  scale_color_viridis(discrete=TRUE)
+```
+
+Histogram by group
+```{r}
+p1 = ggplot(df.nmr, aes(x=`Gluconic acid(g/L)`, color=Type, fill=Type)) +
+   geom_histogram(position="identity", alpha=0.5)  + geom_density(alpha=0.25)
+p2 = ggplot(df.nmr, aes(x=`Total Sugar(g/L)`, color=Type,fill=Type)) +
+   geom_histogram(position="identity", alpha=0.5) + geom_density(alpha=0.25)
+p5 = ggplot(df.nmr, aes(x=`Total Acid(g/L)`, color=Type,fill=Type)) +
+   geom_histogram(position="identity", alpha=0.5) + geom_density(alpha=0.25)
+p6 = ggplot(df.nmr, aes(x=`Acetic acid(g/L)`, color=Type,fill=Type)) +
+   geom_histogram(position="identity", alpha=0.5) + geom_density(alpha=0.25)
+
+#Distribution of ethanol across Types
+p6 = ggplot(df.nmr, aes(x=`Ethanol(g L-1)`, color=Type,fill=Type)) +
+   geom_histogram(position="identity", alpha=0.7) + geom_density(alpha=0.25)
+
+
+ggarrange(p1,p6, p4, nrow = 1, common.legend = TRUE, legend = "bottom")
+```
+p6 = p6 + theme_bw() 
+
+Histograms for max distribution
+```{r}
+
+max.type <- ggplot(df.cfu.type, aes(x=Max.cfu, color=Type, fill=Type)) +
+   geom_histogram(position="identity", alpha=0.7)  + geom_density(alpha=0.25)
+
+hist.cfu.type<- max.type + theme_bw() + scale_fill_brewer(palette="Dark2") + scale_color_brewer(palette="Dark2") + theme(legend.position = "right")
+hist.cfu.type
+
+max.claim <- ggplot(df.cfu, aes(x=Max.cfu, color=Claim, fill=Claim)) +
+   geom_histogram(position="identity", alpha=0.7)  + geom_density(alpha=0.25)
+
+hist.cfu.claim<- max.claim + theme_bw() + scale_fill_brewer(palette="Dark2") + scale_color_brewer(palette="Dark2") + theme(legend.position="bottom")
+```
+ggarrange(hist.cfu.type, hist.cfu.claim, nrow = 1, ncol = 2, common.legend = FALSE, legend = "bottom")
+
+
+ANOVA- comparison between soft,soft-volatile and hard 
+```{r}
+kruskal.test(`Glucose(g L-1)`~ Type, data = df.nmr) #chi-squared = 16.422, df = 2, p-value = 0.0002717
+kruskal.test(`Fructose(g L-1)`~ Type, data = df.nmr) #chi-squared 13.276, df = 2, p-value = 0.00131
+kruskal.test(`Sucrose(g L-1)`~ Type, data = df.nmr) #chi-squared = 22.829, df = 2, p-value = 1.104e-05
+kruskal.test(`Total sugar(g L-1)`~ Type, data = df.nmr) #chi-squared = 19.179, df = 2, p-value = 6.843e-05
+kruskal.test(`Acetic acid(g L-1)`~ Type, data = df.nmr) #chi-squared = 8.8737, df = 2, p-value = 0.01183
+kruskal.test(`Gluconic acid(g L-1)`~ Type, data = df.nmr) #chi-squared = 8.1374, df = 2, p-value = 0.0171
+kruskal.test(`Lactic acid(g L-1)`~ Type, data = df.nmr)#chi-squared = 3.4333, df = 2, p-value = 0.1797
+kruskal.test(`Total acid(g L-1)`~ Type, data = df.nmr)#chi-squared = 3.7664, df = 2, p-value = 0.1521
+kruskal.test(`Erythritol(g L-1)`~ Type, data = df.nmr)#chi-squared = 7.0955, df = 2, p-value = 0.02879
+kruskal.test(`Ethanol(g L-1)`~ Type, data = df.nmr)#chi-squared = 7.0955, df = 2, p-value = 0.02879
+kruskal.test(`Glycerol(g L-1)`~ Type, data = df.nmr)#chi-squared = 7.0955, df = 2, p-value = 1.814e-05
+kruskal.test(`Isobutyrate(mg L-1)`~ Type, data = df.nmr)#chi-squared = 7.0955, df = 2, p-value = 0.04035
+```
+Post-hoc Dunn Test for Kruskal-Wallis rank sum test ~Type
+```{r}
+dunnTest(`Glucose(g L-1)`~ Type, data = df.nmr, method="bh") #Hard - Soft; Hard - Soft-Aberrant
+dunnTest(`Acetic acid(g L-1)`~ Type, data = df.nmr, method="bh") #Hard - Soft; Hard - Soft-Aberrant
+dunnTest(`Ethanol(g L-1)`~ Type, data = df.nmr, method="bh") #Hard - Soft; Hard - Soft-Aberrant, Soft - Soft-Aberrant
+dunnTest(`Fructose(g L-1)`~ Type, data = df.nmr, method="bh") #Hard - Soft; Hard - Soft-Aberrant
+dunnTest(`Glycerol(g L-1)`~ Type, data = df.nmr, method="bh") #Hard - Soft; Hard - Soft-Aberrant; Soft - Soft-Aberrant
+dunnTest(`Sucrose(g L-1)`~ Type, data = df.nmr, method="bh") #Hard - Soft; Hard - Soft-Aberrant, Soft - Soft-Aberrant
+dunnTest(`Total sugar(g L-1)`~ Type, data = df.nmr, method="bh") #Hard - Soft; Hard - Soft-Aberrant, Soft - Soft-Aberrant
+```
+
+
+One-way ANOVA by Claim, Strain.Listed, and Type
+```{r}
+
+
+#nonparametric Kruskal-Wallis ANOVA
+kruskal.test(`logMRS` ~ Claim, data = df.cfu) #p-value = 0.501
+kruskal.test(`logM13` ~ Claim, data = df.cfu) #p-value = 0.06999
+kruskal.test(`logNA` ~ Claim, data = df.cfu) #p-value = 0.1545
+kruskal.test(`logWLN` ~ Claim, data = df.cfu) #p-value = 0.4175
+kruskal.test(Max.cfu ~ Claim, data = df.cfu) #p-value = 0.07491
+
+#nonparametric Kruskal-Wallis ANOVA
+kruskal.test(`logMRS` ~ Type, data = df.cfu.type) #p-value = 0.08
+kruskal.test(`logM13` ~ Type, data = df.cfu.type)  #p-value = 0.012
+dunnTest(`logM13` ~ Type, data = df.cfu.type, method="bh") #p= 0.004 H-SA, S-SA
+kruskal.test(`logNA` ~ Type, data = df.cfu.type)  #p-value = 0.085
+kruskal.test(`logWLN` ~ Type, data = df.cfu.type)  #p-value = 0.06
+dunnTest(`logWLN` ~ Type, data = df.cfu.type, method="bh") #p= 0.03 H-SA
+kruskal.test(Max.cfu ~ Type, data = df.cfu.type)  #p-value = 0.06
+dunnTest(`Max.cfu` ~ Type, data = df.cfu.type, method="bh") 
+```
+`
+ggarrange(MRS.s, Max.s, nrow = 1, ncol = 2, common.legend = TRUE, legend = "bottom")
+
+
+
+```{r}
+``{r}
+#nonparametric Kruskal-Wallis ANOVA
+kruskal.test(`logMRS` ~ Organism.Listed, data = df.cfu) #Kruskal-Wallis hi-squared = 4.7872, df = 1, p-value = 0.0004179
+kruskal.test(`logM13` ~ Organism.Listed, data = df.cfu) #Kruskal-Wallis chi-squared = 1.6969, df = 1, p-value =  0.2003
+kruskal.test(`logNA` ~ Organism.Listed, data = df.cfu) #Kruskal-Wallis chi-squared = 0.080797, df = 1, p-value = 0.7127
+kruskal.test(`logWLN` ~ Organism.Listed, data = df.cfu) #Kruskal-Wallis chi-squared = 2.148, df = 1, p-value = 0.1428
+kruskal.test(Max.cfu ~ Organism.Listed, data = df.cfu) #Kruskal-Wallis chi-squared = 1.1266, df = p-value = 0.007331
+
+#nonparametric Kruskal-Wallis ANOVA
+kruskal.test(`logMRS` ~ Strain.Listed, data = df.cfu) #Kruskal-Wallis chi-squared = 1.8066, df = 1, p-value = 0.004056
+kruskal.test(`logM13` ~ Strain.Listed, data = df.cfu) #df = 1,  p-value = 0.3976
+kruskal.test(`logNA` ~ Strain.Listed, data = df.cfu) #Kruskal-Wallis chi-squared = 0.59788, df = 1, p-value = 0.1547
+kruskal.test(`logWLN` ~ Strain.Listed, data = df.cfu) #Kruskal-Wallis chi-squared = 0.28378, df = 1, p-value = 0.2699
+kruskal.test(Max.cfu ~ Strain.Listed, data = df.cfu) #Kruskal-Wallis chi-squared = 1.1266, df = 1, p-value = 0.007548
+
+```
+```
+
+
+
+
+
+
+
+Make PCA plot by Type: Hard vs Soft vs Soft-aberrant
+```{r}
+#......for NMR data without Ethanol
+View(df.nmr.NOethanol)
+#create pca values for subsets
+nmr.pca <- prcomp(df.nmr.NOethanol[c(3:13)], scale. = TRUE)
+#plot biplot with ellipses (5% CI?)
+autoplot(nmr.pca, data=df.nmr, colour="Type", loadings = TRUE, loadings.colour = 'brown',
+         loadings.label.colour='brown', loadings.label = TRUE, loadings.label.size = 4,
+         loadings.label.repel=TRUE) 
+         +   ggforce::geom_mark_ellipse(aes(fill = Type,
+                        color = Type))
+                        
+nmr.pca.etoh <- prcomp(df.nmr.etoh[c(3:14)], scale. = TRUE)
+#plot biplot with ellipses (5% CI?)
+autoplot(nmr.pca.etoh, data=df.nmr.etoh, colour="Type", loadings = TRUE, loadings.colour = 'brown',
+         loadings.label.colour='brown', loadings.label = TRUE, loadings.label.size = 4,
+         loadings.label.repel=TRUE) 
+         +   ggforce::geom_mark_ellipse(aes(fill = Type,
+                        color = Type))                        
+                        
+```
+p7 = autoplot(nmr.pca, data=df.nmr, colour="Type", loadings = TRUE, loadings.colour = 'brown',
+         loadings.label.colour='black', loadings.label = TRUE, loadings.label.size = 3,
+         loadings.label.repel=TRUE) + theme_bw()
+
+p7
+Make PCA plot by Claim and Type: 
+
+```{r}
+cfu.claims <- df.claims[c(2,4,18:21)]
+cfu.listed <- df.claims[c(6,18:21)]
+
+#create pca values for subsets:Claims
+cfu.claim.pca <- prcomp(cfu.claims[c(3:6)], scale. = TRUE)
+#plot biplot with elliipses around oxygen levels 
+autoplot(cfu.claim.pca, data=cfu.claims, colour="Claim", loadings = TRUE, loadings.colour = 'brown',
+         loadings.label.colour='black', loadings.label = TRUE, loadings.label.size = 3,
+         loadings.label.repel=TRUE) 
+
+#create pca values for subsets:Strain.Listed
+cfu.claim.pca <- prcomp(cfu.claims[c(3:6)], scale. = TRUE)
+#plot biplot with elliipses around oxygen levels 
+autoplot(cfu.claim.pca, data=df.claims, colour="Strain.Listed", loadings = TRUE, loadings.colour = 'brown',
+         loadings.label.colour='black', loadings.label = TRUE, loadings.label.size = 3,
+         loadings.label.repel=TRUE) 
+
+#create pca values for subsets
+cfu.type.pca <- prcomp(df.cfu[c(2:5)], scale. = TRUE)
+#plot biplot with elliipses around oxygen levels 
+autoplot(cfu.type.pca, data=df.cfu, colour="Type", loadings = TRUE, loadings.colour = 'brown',
+         loadings.label.colour='black', loadings.label = TRUE, loadings.label.size = 3,
+         loadings.label.repel=TRUE) 
+
+```
+
+autoplot(cfu.claim.pca, data=df.claims, colour="Strain.Listed", loadings = TRUE, loadings.colour = 'brown',
+         loadings.label.colour='black', loadings.label = TRUE, loadings.label.size = 3,
+         loadings.label.repel=TRUE) 
+
+
+PCA of replicate samples  
+```{r}
+#nmr data
+View(df.nmr)
+df.pca.repnmr <- df.reps[c(6:16)]
+
+#create pca values for subsets
+repnmr.pca <- prcomp(df.pca.repnmr, scale. = TRUE)
+#plot biplot with ellipses (5% CI?)
+autoplot(repnmr.pca, data=df.reps, colour="Replicates", loadings = TRUE, loadings.colour = 'brown',
+         loadings.label.colour='brown', loadings.label = TRUE, loadings.label.size = 4,
+         loadings.label.repel=TRUE) +   ggforce::geom_mark_ellipse(aes(fill = Replicates,
+                        color = Replicates))
+
+#cfu data
+df.pca.repcfu <- df.reps[c(17:20)]
+
+#create pca values for subsets
+repcfu.pca <- prcomp(df.pca.repcfu, scale. = TRUE)
+#plot biplot with ellipses (5% CI?)
+autoplot(repcfu.pca , data=df.reps, colour="Replicates", loadings = TRUE, loadings.colour = 'brown',
+         loadings.label.colour='brown', loadings.label = TRUE, loadings.label.size = 4,
+         loadings.label.repel=TRUE) +   ggforce::geom_mark_ellipse(aes(fill = Replicates,
+                        color = Replicates))
+
+
+```
+
+                        
+```{r}
+# ttest for strain listed AND type
+wilcox.test(`M13.log(CFU/ml)`~ Strain.Listed, conf.int = TRUE, exact = TRUE, data = df.claims) #W = 130, p-value = 0.1228
+wilcox.test(`MRS.log(CFU/ml)`~ Strain.Listed, conf.int = TRUE, exact = TRUE, data = df.claims) #W = 74.5, p-value = 0.001796
+wilcox.test(`NA.log(CFU/ml)`~ Strain.Listed, conf.int = TRUE, exact = TRUE, data = df.claims) #W = 176.5, p-value = 0.8063
+wilcox.test(`WLN.log(CFU/ml)`~ Strain.Listed, conf.int = TRUE, exact = TRUE, data = df.claims) #W = 127, p-value = 0.1082
+wilcox.test(Median.CFU~ Strain.Listed, conf.int = TRUE, exact = TRUE, data = df.claims) #W = 119, p-value = 0.06871
+
+wilcox.test(`M13.log(CFU/ml)`~ Type, conf.int = TRUE, exact = TRUE, data = df.claims) #W = 138.5, p-value = 0.06322
+wilcox.test(`MRS.log(CFU/ml)`~ Type, conf.int = TRUE, exact = TRUE, data = df.claims) #W = 176, p-value = 0.3752
+wilcox.test(`NA.log(CFU/ml)`~ Type, conf.int = TRUE, exact = TRUE, data = df.claims) #W = 143, p-value = 0.08811
+wilcox.test(`WLN.log(CFU/ml)`~ Type, conf.int = TRUE, exact = TRUE, data = df.claims) #W = 151, p-value = 0.1306
+wilcox.test(Median.CFU~ Type, conf.int = TRUE, exact = TRUE, data = df.claims) #W = 119, p-value = 0.06871
+#________________________________________________________
+
+wilcox.test(`M13.log(CFU/ml)`~ Strain.Listed, conf.int = TRUE, exact = TRUE, data = df.adj) #p-value = 0.1561
+wilcox.test(`MRS.log(CFU/ml)`~ Strain.Listed, conf.int = TRUE, exact = TRUE, data = df.adj) #W = 93.5, p-value = 0.0003721
+wilcox.test(`NA.log(CFU/ml)`~ Strain.Listed, conf.int = TRUE, exact = TRUE, data = df.adj) #W = 176.5, p-value = p-value = 0.9182
+wilcox.test(`WLN.log(CFU/ml)`~ Strain.Listed, conf.int = TRUE, exact = TRUE, data = df.adj) #W = 171, p-value = 0.07184
+wilcox.test(Median.CFU~ Strain.Listed, conf.int = TRUE, exact = TRUE, data = df.adj) #W = 119, W = 165, p-value = 0.055
+
+wilcox.test(logM13~ Type, conf.int = TRUE, exact = TRUE, data = df.adj.l) #W = 210, p-value = 0.3008
+wilcox.test(logMRS~ Type, conf.int = TRUE, exact = TRUE, data = df.adj.l) #W = 166, p-value = 0.6527
+wilcox.test(logNA~ Type, conf.int = TRUE, exact = TRUE, data = df.adj.l) #W = 127.5, p-value = 0.3996
+wilcox.test(logWLN~ Type, conf.int = TRUE, exact = TRUE, data = df.adj.l) #W = 236, p-value = 0.1076
+#wilcox.test(Median.CFU~ Type, conf.int = TRUE, exact = TRUE, data = df.adj) #W = 246, p-value = 0.1561
+
+
+cor.test(df.adj$`MRS.log(CFU/ml)`, df.adj$`Acetic acid(g/L)`, method=c("spearman"))
+```
+
+
+Linear regression model for Median CFU and MRS CFU
+```{r}
+#Create new dataset with median CFU to build lineaer regression model- including AA, ethanol, claim, brand,type
+#create new dataframe with variables of interest
+df.linear <- df.adj[c(1,2,3,4,6,7,9,18,19,20,21)]
+
+#determine which variables to include in regression model and look for multicollinearity
+pairs(df.linear[c(6,7,8,9,10,11)])
+head(df.adj)
+
+pairs(df.adj[c(7:17,19)])
+#couldn't find a model to fita linear regression- 
+```
+pairs(df.adj[c(7:18)])
+
+
+Build factorial regression for Median CFU and MRS CFU
+```{r}
+#for MRS
+#explore data
+boxplot.type.mrs <- ggplot(df.claims.l, aes(x=Type, y=`M13.log(CFU/ml)`))
+boxplot.type.mrs + geom_boxplot() #no
+
+boxplot.claim.mrs <- ggplot(df.claims, aes(x=Claim, y=`M13.log(CFU/ml)`))
+boxplot.claim.mrs + geom_boxplot() #yes
+boxplot.claim.mrs <- ggplot(df.claims, aes(x=Strain.Listed,y= `M13.log(CFU/ml)`))
+boxplot.claim.mrs + geom_boxplot() #yes
+
+df.claims$Claim <- as.factor(df.claims$Claim)
+MRSModel<-aov(`MRS.log(CFU/ml)` ~ Strain.Listed * Claim, data = df.claims)
+summary(MRSModel)
+
+plot(MRSModel, 1)
+leveneTest(`MRS.log(CFU/ml)` ~ Strain.Listed * Claim, data = df.claims)
+
+plot(MRSModel, 2)
+#for Median CFU
+TukeyHSD(MRSModel, which = "Strain.Listed")
+
+library(multcomp)
+summary(glht(MRSModel, linfct = mcp(Claim = "Tukey")))
+
+MedianModel<-aov(Median.CFU ~ Claim * Strain.Listed, data = df.claims)
+summary(MedianModel)
+```
+
+
+```{r}
+# create the lollipop plot
+
+df.readcounts <-  read_csv("Lac.Bac.Counts.csv")
+df.readcounts <- df.readcounts[,-1]
+df.bacillus <- df.readcounts %>% filter(Organism == "Bacillus")
+df.lactobacillus <- df.readcounts %>% filter(Organism == "Lactobacillus")
+
+
+# DATAFRAME df.readcounts dataframe with read counts and categories
+df.readcounts[is.na(df.readcounts)] <- 0 
+
+df.readcounts$Reads <- factor(df.readcounts$Reads, levels=c("High", "Med", "Low"))
+
+p <- ggplot(df.readcounts, aes(y = Reads , x = `logNA`, fill = Organism, color=Organism)) + geom_segment(aes(x = 0, y = Reads, xend = `logNA`, yend = Reads), color = "grey") + geom_point(color = "orange") + facet_wrap(~Organism) +theme_bw()
+
+p2 <- ggplot(df.readcounts, aes(y = Reads , x = Max.cfu, fill = Organism, color=Organism)) + geom_segment(aes(x = 0, y = Reads, xend = Max.cfu, yend = Reads), color = "grey") + geom_point(color = "blue") + facet_wrap(~Organism) +theme_bw()
+
+p3 <- ggplot(df.readcounts, aes(y = Reads , x = `logMRS`, fill = Organism, color=Organism)) + geom_segment(aes(x = 0, y = Reads, xend = `logMRS`, yend = Reads), color = "grey") + geom_point(color = "red") + facet_wrap(~Organism) +theme_bw()
+
+#--------Perform ANOVA for stats
+kruskal.test(`logMRS` ~ Reads, data = df.bacillus) #Kruskal-Wallis p-value = 0.06258
+kruskal.test(`logNA` ~ Reads, data = df.bacillus) #Kruskal-Wallis p-value = 0.173
+kruskal.test(Max.cfu ~ Reads, data = df.bacillus) #Kruskal-Wallis p-value = 0.1987
+
+kruskal.test(`logMRS` ~ Reads, data = df.lactobacillus) #Kruskal-Wallis p-value = 0.01385
+dunnTest(`logMRS` ~ Reads, data = df.lactobacillus, method="bonferroni") #**0.01299504 low-med
+kruskal.test(`logNA` ~ Reads, data = df.lactobacillus) #Kruskal-Wallis p-value = 0.07757
+kruskal.test(Max.cfu ~ Reads, data = df.lactobacillus) #Kruskal-Wallis p-value = 0.001671
+dunnTest(Max.cfu ~ Reads, data = df.lactobacillus, method="bonferroni") #0.006649067 hi-low 0.008666620 #low-medium 
+```
+
+
+Looking at consistencies within replicates 
+```{r}
+#df with just the replicated samples
+df.reps<- df.snpro %>% drop_na("Replicates") #remove samples that do not have a replicate
+df.reps[is.na(df.reps)] <- 0 #convert NA to 0
+df.reps.2 <- df.reps[c(4,11:21,31,29,27,25,23)]
+
+#create a violin plot of CFU distribution for replicates
+M13.r <- ggplot(df.reps.2, aes(x= Replicates, y=`logM13`, fill=Replicates)) +
+  geom_violin()+
+  geom_boxplot(width=0.1) + scale_fill_brewer(palette="RdPu") + scale_x_discrete(guide = guide_axis(check.overlap = TRUE))
+MRS.r <- ggplot(df.reps.2, aes(x= Replicates, y=`logMRS`, fill=Replicates)) +
+  geom_violin()+
+  geom_boxplot(width=0.1) + scale_fill_brewer(palette="RdPu") + scale_x_discrete(guide = guide_axis(check.overlap = TRUE))
+WLN.r <- ggplot(df.reps.2, aes(x= Replicates, y=`logWLN`, fill=Replicates)) +
+  geom_violin()+
+  geom_boxplot(width=0.1) + scale_fill_brewer(palette="RdPu") + scale_x_discrete(guide = guide_axis(check.overlap = TRUE))
+NAm.r <- ggplot(df.reps.2, aes(x= Replicates, y=`logNA`, fill=Replicates)) +
+  geom_violin()+
+  geom_boxplot(width=0.1) + scale_fill_brewer(palette="RdPu") + scale_x_discrete(guide = guide_axis(check.overlap = TRUE))
+
+#---------------Make biplot
+df.reps.NMR <- df.reps[c(11:21)]
+#create pca values for subsets
+reps.pca <- prcomp(df.reps.NMR, scale. = TRUE)
+#plot biplot with ellipses (5% CI?)
+autoplot(reps.pca , data=df.reps, colour="Replicates", loadings = TRUE, loadings.colour = 'black',
+         loadings.label.colour='brown', loadings.label = TRUE, loadings.label.size = 3,
+         loadings.label.repel=TRUE) +   ggforce::geom_mark_ellipse(aes(fill = Replicates,
+                        color = Replicates))
+```
+
+autoplot(reps.pca , data=df.reps, colour="Replicates", loadings = TRUE, loadings.colour = 'brown',
+         loadings.label.colour='black', loadings.label = TRUE, loadings.label.size = 3,
+         loadings.label.repel=TRUE) +   ggforce::geom_mark_ellipse(aes(fill = Replicates,
+                        color = Replicates)) + theme_bw()
+
+
+```{r}
+bottle.df <- read_csv("Bottle.Diff.Bar.csv") #dataframe containing comparison of CFU count on bottle vs observed SPC
+head(bottle.df)
+bottle.df
+
+bottle.df$Value <- factor(bottle.df$Value, levels=c("Max:SPC", "Difference"))
+
+#Default bar plot
+#fill= Brand; x-axis= Value, y-axis= 'log(CFU ml-1)'
+p<- ggplot(bottle.df, aes(x=Brand, y=`log(CFU ml-1)`, fill=Value)) + 
+  geom_bar(stat="identity", color="black", 
+           position=position_dodge()) +
+  geom_errorbar(aes(ymin=`log(CFU ml-1)`-SD, ymax=`log(CFU ml-1)`+SD), width=.2,
+                 position=position_dodge(.9)) + theme_bw() +
+scale_fill_brewer(palette="Paired") + scale_color_brewer(palette="Paired") + theme(legend.position = "bottom")
+
+print(p)
+```
+print(p)
+
+Arrange images for figure 2 + 3 
+```{r}
+#figure2
+ggarrange(p6, p7,nrow = 1,ncol=2, common.legend = TRUE, legend = "bottom")
+#figure3
+ggarrange(hist.cfu.type, hist.cfu.claim,organism,p,common.legend = FALSE, legend = "bottom")
+
+hist.cfu.type/(WLN.t|M13.t)/p
+```
+
+ggarrange(p6, p7,nrow = 1,ncol=2, common.legend = TRUE, legend = "bottom")
+ggarrange(hist.cfu.type, hist.cfu.claim,organism,p,common.legend = FALSE, legend = "bottom")
+
+MANOVA comparing NMR of types 
+```{r}
+#independent variable- type
+#dependent variables- compounds without ethanol 
+
+#create dataset with just type and compounds of interest #method from https://www.r-bloggers.com/2022/01/manova-in-r-how-to-implement-and-interpret-one-way-manova/
+
+nmr.MANOVA <- df.adj[c(2,10,11,14:20)]
+head(nmr.MANOVA)
+#combine dependent variables: Acetic acid(g L-1), Erythritol(g L-1), Fructose(g L-1) Gluconic acid(g L-1), Glucose(g L-1), Isobutyrate(mg L-1), Lactic acid(g L-1), Sucrose(g L-1)
+nmr.MANOVA <- na.omit(nmr.MANOVA)
+
+dependent_vars <- cbind(nmr.MANOVA$`Acetic acid(g L-1)`, nmr.MANOVA$`Erythritol(g L-1)`, nmr.MANOVA$`Fructose(g L-1)`, nmr.MANOVA$`Gluconic acid(g L-1)`, nmr.MANOVA$`Glucose(g L-1)`, nmr.MANOVA$`Glycerol(g L-1)`, nmr.MANOVA$`Isobutyrate(mg L-1)`, nmr.MANOVA$`Lactic acid(g L-1)`, nmr.MANOVA$`Sucrose(g L-1)`)
+
+#set independent variable
+independent_var <- nmr.MANOVA$Type
+
+#create manova model 
+manova_model <- manova(dependent_vars ~ independent_var, data = nmr.MANOVA)
+summary(manova_model)
+
+#Post-hoc test by performing a linerar discriminant analysis (from: https://www.reneshbedre.com/blog/manova.html)
+
+post_hoc <- lda(independent_var ~ dependent_vars, CV=F)
+post_hoc
+
+#plot
+plot_lda <- data.frame(nmr.MANOVA[, "Type"], lda = predict(post_hoc)$x)
+
+MANOVA.plot <- ggplot(plot_lda) + geom_point(aes(x = lda.LD1, y = lda.LD2, colour = Type), size = 2) + theme_bw() + stat_ellipse(geom = "polygon",
+               aes(x = lda.LD1, y = lda.LD2, fill = Type), 
+               alpha = 0.25)
+
+print(MANOVA.plot)
+```
+print(MANOVA.plot)
+
+Run another MANOVA comparing soft to soft-aberrant 
+```{r}
+#independent variable- type
+#dependent variables- compounds without ethanol 
+SNProR_soft <- read_csv("SNProR.soft.csv", 
+    na = "empty")
+#remove SN#ID and ethanol concentration
+Soft.MANOVA.nmr <- SNProR_soft[-c(1,4)]
+
+#create dataset with just type and compounds of interest #method from https://www.r-bloggers.com/2022/01/manova-in-r-how-to-implement-and-interpret-one-way-manova/
+
+#combine dependent variables: Acetic acid(g L-1) Fructose(g L-1) Gluconic acid(g L-1), Glucose(g L-1), Isobutyrate(mg L-1), Lactic acid(g L-1), Sucrose(g L-1)
+
+dependent_vars <- cbind(Soft.MANOVA.nmr$`Acetic acid(g L-1)`,Soft.MANOVA.nmr$`Fructose(g L-1)`, Soft.MANOVA.nmr$`Gluconic acid(g L-1)`, Soft.MANOVA.nmr$`Glucose(g L-1)`, Soft.MANOVA.nmr$`Glycerol(g L-1)`, Soft.MANOVA.nmr$`Isobutyrate(mg L-1)`, Soft.MANOVA.nmr$`Lactic acid(g L-1)`, Soft.MANOVA.nmr$`Sucrose(g L-1)`)
+
+#set independent variable
+independent_var <- Soft.MANOVA.nmr$Type
+
+#create manova model 
+manova_model_2 <- manova(dependent_vars ~ independent_var, data = Soft.MANOVA.nmr)
+summary(manova_model_2)
+
+
+```
+
+
+correlation plot
+```{r}
+
+##function for p-values
+cor.mtest <- function(mat, ...) {
+    mat <- as.matrix(mat)
+    n <- ncol(mat)
+    p.mat<- matrix(NA, n, n)
+    diag(p.mat) <- 0
+    for (i in 1:(n - 1)) {
+        for (j in (i + 1):n) {
+            tmp <- cor.test(mat[, i], mat[, j], ...)
+            p.mat[i, j] <- p.mat[j, i] <- tmp$p.value
+        }
+    }
+  colnames(p.mat) <- rownames(p.mat) <- colnames(mat)
+  p.mat
+}
+
+
+##make df for corrmatrix
+df.corr <- df.adj[10:22]
+head(df.corr)
+df.corr <- df.corr[,-4]
+df.corr[is.na(df.corr)] <- 0.0000001
+
+corr.matrix <-cor(df.corr,use="complete.obs", method="pearson") #calculate correlation values 
+p.mat <- cor.mtest(corr.matrix)
+head(p.mat)
+corr <- corrplot(corr.matrix, method="circle", type="upper", order="hclust", col=brewer.pal(n=8, name="RdYlBu"), 
+addCoef.col = "black",
+         tl.col="black", tl.srt=45, number.cex = 0.5,
+p.mat = p.mat, sig.level = 0.01, insig = "blank")
+
+
+
+# Create the correlation plot
+corr <- corrplot(corr.matrix, method="circle", type="upper", order="hclust", col=brewer.pal(n=8, name="RdYlBu"), 
+addCoef.col = "black",
+         tl.col="black", tl.srt=45)
+
+# Add the p-values to the plot
+for (i in 1:ncol(p.mat)) {
+    for (j in 1:nrow(p.mat)) {
+        if (i > j) {
+            text(x = i, y = j, labels = format(p.mat[i, j], scientific = TRUE), number.cex = 0.2, cex.axis = 0.1, font = 0.2, xpd = TRUE)
+        }
+    }
+}
+
+```
+corr
+
+```{r}
+
+df.replicates <- read_csv("snopro.reps.csv") #original dataset containing demograohic, cfu, logcfu, and NMR data- no samples removed
+
+df.rep.nmr <- df.replicates[c(3,6:18)]
+df.rep.nmr[is.na(df.rep.nmr)] <- 0.00001
+
+#create pca values for subsets
+nmr.pca <- prcomp(df.rep.nmr[c(2:13)], scale. = TRUE)
+#plot biplot with ellipses (5% CI?)
+autoplot(nmr.pca, data=df.rep.nmr, colour="Replicate", loadings = TRUE, loadings.colour = 'brown',
+         loadings.label.colour='brown', loadings.label = TRUE, loadings.label.size = 3,
+         loadings.label.repel=TRUE) 
+
+
+library(devtools)
+install_github("vqv/ggbiplot")
+# Perform PCA on your data
+pca_results <- prcomp(df.rep.nmr[c(2:13)], scale = TRUE)
+
+# Create a ggbiplot object
+pca_biplot <- ggbiplot(pca_results, obs.scale = 1, var.scale = 1, groups = df.rep.nmr$Replicate,ellipse = TRUE, ellipse.level = 0.95)
+
+# Customize the plot
+pca_biplot + theme_classic() +  scale_color_discrete(name = "Replicate")
+
+library(factoextra)
+fviz_pca_ind(pca_results, 
+             geom = "point", 
+             ellipse.type = "confidence", 
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             addEllipses = TRUE,
+             label = "var",
+             repel = TRUE)
+
+```
+

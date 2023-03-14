@@ -1,0 +1,353 @@
+---
+title: "Yeast SNPro Phylo"
+author: "K Harrison"
+date: "2022-07-21"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+Load libraries
+```{r}
+===
+library(phyloseq)
+library(devtools)
+library(dplyr)
+library(vegan)
+library(ggplot2)
+library(ape)
+library(ggpubr)
+library(readr)
+library(devtools)
+library(ggfortify)
+library(ggforce)
+library(ellipse)
+library(data.table)
+#library(decontam)
+library(microViz)
+install.packages(c("devtools", "RcppEigen", "RcppParallel", "Rtsne", "ggforce", "units"))
+install.packages("remotes")
+remotes::install_github("vmikk/metagMisc")
+library(metagMisc)
+```
+
+```
+
+
+```{r}
+setwd("~/Documents/Data/Probiotic SN Study/Packaged product analysis/R data")
+#Yeast
+asv_matITS<- read_csv("ITS ASV SNPro Pro.csv")
+#ASV counts
+tax_matITS<- read_csv("ITS TAXA SNPro.csv") 
+#Taxa comparison
+samples_dfITS <- read_csv("ITS SAMP SNPro Pro.csv")
+###set demo info to factors so that we can merge downstream
+samples_dfITS$Type <-as.factor(samples_dfITS$Type)
+samples_dfITS$Claim <-as.factor(samples_dfITS$Claim)
+samples_dfITS$Project <-as.factor(samples_dfITS$Project)
+
+#------#define the row names from the otu column- bacteria
+asv_matITS <- asv_matITS %>%
+  tibble::column_to_rownames("ASV") 
+asv_matITS <- as.matrix(asv_matITS) #idem matrix
+
+tax_matITS <- tax_matITS %>% 
+  tibble::column_to_rownames("ASV")
+tax_matITS <- as.matrix(tax_matITS)
+
+samples_dfITS <- samples_dfITS %>% 
+  tibble::column_to_rownames("ID")
+```
+
+```{r}
+#Phyloseq object 
+ASV.ITS = otu_table(asv_matITS, taxa_are_rows = TRUE)
+TAX.ITS = tax_table(tax_matITS)
+samples.ITS = sample_data(samples_dfITS)
+df.fungi <- phyloseq(ASV.ITS, TAX.ITS, samples.ITS)
+df.fungi
+```
+
+
+```{r}
+df.fungi <- subset_taxa(df.fungi, Genus != "Fungi_phylum_unknown")
+df.fungi<- subset_samples(df.fungi, NMR.Data == "Yes")
+# Determine which genera are present
+#tax_table(df.fungi)[, "Species"]
+
+#generate random tree and merge into phyloseq object for ordinate calculations
+random_tree = rtree(ntaxa(df.fungi), rooted=TRUE, tip.label=taxa_names(df.fungi))
+#plot(random_tree)
+df.fungi = merge_phyloseq(df.fungi, random_tree)
+
+df.fungi.prod <- subset_samples(df.fungi, Project == "Package Product")
+#tax_table(df.bacteria.prod)[, "Genus"]
+#create a dataset for the packaged product analysis
+df.fungi.fil = filter_taxa(df.fungi, function(x) sum(x > 5) > (0.25*length(x)), TRUE) ##Remove taxa not seen more than 5 times in at least 25% of the samples. This protects against an OTU with small mean & trivially large C.V.
+#df.bacteria <- tax_glom(df.bacteria.fil, taxrank = "Genus") #merge genus-level
+#tax_table(df.bacteria.fil)[, "Genus"]
+RA.fungi<- transform_sample_counts(df.fungi.fil, function(x) x / sum(x) )
+tax_table(RA.fungi)
+#merge species into genera
+RA.fungi.genus = tax_glom(RA.fungi, "Genus")
+
+yeast.RA.matrix <- phyloseq_to_df(RA.fungi, addtax = T, addtot = T, addmaxrank = F,
+  sorting = "abundance")
+  
+yeast.RA.matrix.g <- phyloseq_to_df(RA.fungi.genus, addtax = T, addtot = T, addmaxrank = F,
+  sorting = "abundance")
+
+write.csv(yeast.RA.matrix.g, "RA.ITS.matrix.g.csv")
+```
+
+
+
+```{r}
+p1 <- plot_bar(RA.fungi, fill = "Species", title = "") + facet_wrap(~Type, scales= "free_x", nrow=1) + geom_point() + theme(axis.text.x=element_blank(), axis.ticks.x=element_blank())
+p1 = p1 + geom_bar(aes(color=Species, fill=Species), stat="identity", position="stack")
+
+p2 <- plot_bar(RA.fungi, fill = "Genus", title = "") + facet_wrap(~Type, scales= "free_x", nrow=1) +
+  theme(axis.text.x=element_blank(), axis.ticks.x=element_blank())
+p2 = p2 + geom_bar(aes(color=Genus, fill=Genus), stat="identity", position="stack") #+ theme(legend.position = "none") 
+
+p3 <- plot_bar(RA.fungi, fill = "Species", title = "") + facet_wrap(~Claim, scales= "free_x", nrow=1) +
+  theme(axis.text.x=element_blank(), axis.ticks.x=element_blank())
+p3 = p3 + geom_bar(aes(color=Species, fill=Species), stat="identity", position="stack") #+ theme(legend.position = "none") 
+
+p4 <- plot_bar(RA.fungi, fill = "Genus", title = "") + facet_wrap(~Claim, scales= "free_x", nrow=1) +
+  theme(axis.ticks.x = element_blank(),
+        axis.text.x = element_blank())
+p4 = p4 + geom_bar(aes(color=Genus, fill=Genus), stat="identity", position="stack") #+ theme(legend.position = "none") 
+
+ggarrange(p2,p4, nrow = 1,ncol=2,common.legend = TRUE, legend="right")
+```
+ggarrange(p1,p2, nrow = 1,ncol=2, legend="right")
+
+Alpha diversity-Plots
+```{r}
+sample_data(df.fungi.fil)$simpson.physeq <- estimate_richness(df.fungi, measures="Simpson")
+p <- plot_richness(df.fungi.fil, "Claim", measures=c("Chao1", "Shannon"), color="Claim") + theme_bw()
+p + geom_boxplot(data=p$data, aes(x=Claim, y=value, color=NULL), alpha=0.1)
+```
+p <- plot_richness(df.fungi.fil, "Type", measures=c("Chao1", "Shannon"), color="Type") + theme_bw()
+p
+p + geom_boxplot(data=p$data, aes(x=Type, y=value, fill=Type), alpha=0.2)
+
+```{r}
+#Measure Alpha diversity measure- Shannon
+df.fungi.shannon <- estimate_richness(df.fungi.fil, measures="Shannon")
+
+#Measure Alpha diversity measure- Chao1
+df.fungi.chao1 <- estimate_richness(df.fungi.fil, measures="Chao1")
+
+#Plot alpha diversity by Type, Claim, PStrain.Listed
+p.alpha.claim <- plot_richness(df.fungi.fil, "Claim", measures=c("Chao1", "Shannon"), color = "Claim") 
+p.alpha.type <- plot_richness(df.fungi.fil, "Type", measures=c("Chao1", "Shannon"), color = "Type") 
+ 
+p.alpha.claim + geom_boxplot(alpha=0.3)
+p.alpha.type + geom_boxplot(alpha=0.3)
+#Pairwise Wilcoxon rank-sum test for Beta Diversity
+pairwise.wilcox.test(df.fungi.chao1$Chao1,sample_data(df.fungi.fil)$Type)
+#              Hard  Soft 
+#Soft          0.039 -    
+#Soft-Aberrant 0.230 0.562
+pairwise.wilcox.test(df.fungi.chao1$Chao1,sample_data(df.fungi.fil)$Claim)
+#         live   none  
+#none      0.0096 -     
+#probiotic 0.0982 0.0920
+
+pairwise.wilcox.test(df.fungi.shannon$Shannon,sample_data(df.fungi.fil)$Type)
+#              Hard Soft
+#Soft          0.18 -   
+#Soft-Aberrant 0.67 0.10
+pairwise.wilcox.test(df.fungi.shannon$Shannon,sample_data(df.fungi.fil)$Claim)
+#          live  none 
+#none      0.035 -    
+#probiotic 0.151 0.035
+```
+
+
+```{r}
+df.fungi.fil <- tax_fix(df.fungi.fil)
+df.fungi.fil <- phyloseq_validate(df.fungi.fil, remove_undetected = TRUE)
+df.fungi.fil %>% 
+  tax_transform(trans = "clr", rank = "Genus")
+
+
+df.fungi.fil %>% 
+  tax_transform("clr", rank = "Genus") %>% 
+  # when no distance matrix or constraints are supplied, PCA is the default/auto ordination method
+  ord_calc() %>% 
+  ord_plot_iris(tax_level = "Genus", anno_colour = "Type")
+
+
+#df.fungi.fil %>% 
+#  tax_transform("clr", rank = "Genus") %>% 
+#  # when no distance matrix or constraints are supplied, PCA is the default/auto ordination method
+#  ord_calc() %>% 
+#  ord_plot_iris(tax_level = "Genus", ord_plot = "above", anno_colour = "Type")
+
+
+
+#scree
+DistUF = distance(df.fungi.fil, method = "bray")
+ordUF = ordinate(df.fungi.fil, method = "PCoA", distance = DistUF)
+plot_scree(ordUF, "Scree Plot: Weighted UniFrac MDS") + theme_bw()
+
+adonis2(DistUF ~ sample_data(df.fungi.fil)$Type) # 0.052*
+adonis2(DistUF ~ sample_data(df.fungi.fil)$Claim) #0.013 *
+
+plot_ordination(df.fungi.fil, ordinate(df.fungi.fil, method='NMDS', dist = 'bray'), type='split',
+                color='Type')
+ord <- ordinate(df.fungi.fil, method='NMDS')
+p <- plot_ordination(df.fungi.fil, ord, type='sample', 
+                color='Type')
+#t-distribution and normal distribution         
+p + 
+  stat_ellipse(type = "norm", linetype = 2) +
+  stat_ellipse(type = "t") + 
+  theme_bw()
+
+
+```
+
+```{r}
+df.fungi <- phyloseq_to_df(RA.fungi, addtax = T, addtot = F, addmaxrank = F,
+  sorting = "abundance")
+write.csv(df.fungi,"~/Documents/Data/Probiotic SN Study/Packaged product analysis/R data/dffungi.csv", row.names = TRUE)
+
+```
+
+
+By species
+```{r}
+RA.ANOVA<- read_csv("RA.ITS.matrix.csv") #ASV counts
+
+kruskal.test(`Brettanomyces bruxellensis`~ Type, data = RA.ANOVA) 
+#p-value = 0.3714
+
+kruskal.test(`Saccharomyces_species_unknown`~ Type, data = RA.ANOVA) 
+#p-value = 0.01786
+dunnTest(`Saccharomyces_species_unknown`~ Type, data = RA.ANOVA, method="bh") 
+#Hard - Soft-Aberrant p = 0.01608394
+
+kruskal.test(`Hanseniaspora valbyensis`~ Type, data = RA.ANOVA) 
+#p-value = 0.346
+
+kruskal.test(`Lachancea fermentati`~ Type, data = RA.ANOVA) 
+#p-value = 0.8357
+
+kruskal.test(`Saccharomycetaceae_genus_unknown`~ Type, data = RA.ANOVA) 
+#p-value = 0.01786
+
+kruskal.test(`Brettanomyces anomala`~ Type, data = RA.ANOVA) 
+#p-value = 0.03064
+dunnTest(`Brettanomyces anomala`~ Type, data = RA.ANOVA, method="bh") 
+#Hard - Soft p-value = 0.02860248
+
+kruskal.test(`Brettanomyces anomala`~ Type, data = RA.ANOVA) 
+#p-value = 0.03064
+dunnTest(`Brettanomyces anomala`~ Type, data = RA.ANOVA, method="bh") 
+#Hard - Soft p-value = 0.02860248
+
+kruskal.test(`Brettanomyces anomala`~ Type, data = RA.ANOVA) 
+#p-value = 0.03064
+dunnTest(`Brettanomyces anomala`~ Type, data = RA.ANOVA, method="bh") 
+#Hard - Soft p-value = 0.02860248
+
+kruskal.test(`Issatchenkia orientalis`~ Type, data = RA.ANOVA) 
+#p-value = 0.8253
+
+kruskal.test(`Kregervanrija fluxuum`~ Type, data = RA.ANOVA) 
+#p-value = 0.3696
+```
+
+By genera
+```{r}
+RA.ANOVA<- read_csv("RA.ITS.matrix.g.csv") #ASV counts
+
+kruskal.test(`Brettanomyces`~ Type, data = RA.ANOVA) 
+#p-value = 0.1367
+
+kruskal.test(`Saccharomyces`~ Type, data = RA.ANOVA) 
+#p-value = 0.04622
+dunnTest(`Saccharomyces`~ Type, data = RA.ANOVA, method="bh") 
+#Hard - Soft-Aberrant, p-vale = 0.04544316
+
+kruskal.test(`Hanseniaspora`~ Type, data = RA.ANOVA) 
+#p-value = 0.346
+kruskal.test(`Lachancea`~ Type, data = RA.ANOVA) 
+#p-value = 0.8357
+kruskal.test(`Hanseniaspora`~ Type, data = RA.ANOVA) 
+#p-value = 0.346
+kruskal.test(`Saccharomycetaceae_genus_unknown`~ Type, data = RA.ANOVA) 
+#p-value = 0.1307
+kruskal.test(`Issatchenkia`~ Type, data = RA.ANOVA) 
+#p-value = 0.8253
+kruskal.test(`Pichiaceae_genus_unknown`~ Type, data = RA.ANOVA) 
+#p-value = 0.4677
+kruskal.test(`Starmerella`~ Type, data = RA.ANOVA) 
+#p-value = 0.3232
+kruskal.test(`Cryptococcus`~ Type, data = RA.ANOVA) 
+#p-value = 0.6053
+```
+
+Looking at replicate samples 
+```{r}
+#Yeast
+asv_matITS.R<- read_csv("ITS ASV SNPro.csv") #ASV counts
+tax_matITS.R<- read_csv("ITS TAXA SNPro.csv") #Taxa comparison
+samples_dfITS.R <- read_csv("ITS SAMP SNPro.csv") #Sample comparison
+###set demo info to factors so that we can merge downstream
+samples_dfITS.R$Replicated <-as.factor(samples_dfITS.R$Replicated)
+samples_dfITS.R$Replicate <-as.factor(samples_dfITS.R$Replicate)
+#------define the row names from the otu column- bacteria
+asv_matITS.R <- asv_matITS.R %>%
+  tibble::column_to_rownames("ASV") 
+asv_matITS.R <- as.matrix(asv_matITS.R) 
+#id matrix
+tax_matITS.R <- tax_matITS.R %>% 
+  tibble::column_to_rownames("ASV")
+tax_matITS.R <- as.matrix(tax_matITS.R)
+samples_dfITS.R <- samples_dfITS.R %>% 
+  tibble::column_to_rownames("ID")
+#------create phyloseq object
+ASV.ITS = otu_table(asv_matITS.R, taxa_are_rows = TRUE)
+TAX.ITS = tax_table(tax_matITS.R)
+samples.16S = sample_data(samples_df16S.R)
+df.bacteria <- phyloseq(ASV.16S, TAX.16S, samples.16S)
+df.bacteria
+#-------create phyoseq object just replicates 
+df.replicates <- subset_samples(df.bacteria, Replicated == "Yes")
+#Filter through samples 
+df.replicates <- subset_taxa(df.replicates, Genus != "mitochondria_genus_unknown")
+df.replicates <- subset_taxa(df.replicates, Genus != "Ralstonia")
+df.replicates.fil = filter_taxa(df.replicates, function(x) sum(x > 5) > (0.25*length(x)), TRUE)
+RA.replicates<- transform_sample_counts(df.replicates.fil, function(x) x / sum(x) )
+
+#create taxa plots for replicate samples-favcet by rep
+p <- plot_bar(RA.replicates, fill = "Genus", title = "Genus") + geom_point() 
++ theme(axis.text.x=element_blank(), axis.ticks.x=element_blank())
+
+p + geom_bar(aes(color=Genus, fill=Genus), stat="identity", position="stack") + facet_wrap(~Replicate, scales= "free_x", nrow=1)
+
+```
+
+
+```{r}
+#relative abundance to make S.cerevisae 
+df.RA.ITS <- read_csv("RA.ITS.matrix.csv")
+#Saccharomyces_species_unknown
+
+ggplot(df.RA.ITS, aes(x=Type, y=Saccharomyces_species_unknown, fill=Type)) +
+  geom_boxplot() +
+  stat_compare_means(aes(label=paste0(..p.format..)), label.y = c(5,5)) +
+  scale_y_continuous(limits=c(0,1))
+  
+
+```
+
